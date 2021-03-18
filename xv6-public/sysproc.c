@@ -43,6 +43,12 @@ sys_getpid(void)
 }
 
 int
+sys_getppid(void)
+{
+  return getppid();
+}
+
+int
 sys_sbrk(void)
 {
   int addr;
