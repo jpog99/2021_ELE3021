@@ -48,6 +48,13 @@ sys_getppid(void)
   return getppid();
 }
 
+int 
+sys_yield(void)
+{
+	yield();
+	return 0;
+}
+
 int
 sys_sbrk(void)
 {
