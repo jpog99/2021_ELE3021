@@ -136,7 +136,7 @@ static int (*syscalls[])(void) = {
 [SYS_getppid]  sys_getppid,
 [SYS_yield]  sys_yield,
 [SYS_getlev]  sys_getlev,
-[SYS_cpu_share]  sys_set_cpu_share,
+[SYS_set_cpu_share]  sys_set_cpu_share,
 };
 
 void
