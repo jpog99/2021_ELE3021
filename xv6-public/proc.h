@@ -1,40 +1,34 @@
-#define TOP_TS 1
-#define MID_TS 2
-#define LOW_TS 4
-#define TOP_ALLOT 5
-#define MID_ALLOT 10
+//constants for new scheduler
+#define     TOP_QUANTA    1
+#define     MID_QUANTA    2
+#define     LOW_QUANTA    4
+#define     TOP_ALLOT    5
+#define     MID_ALLOT    10
+#define     PR_BOOST_TICK    100
+#define     TOT_TICKET       10000
 
-#define PR_BOOST_TICK 100
-#define TOTAL_CPU 10000
+//schedule mode and mlfq levels
+enum sched_mode { MLFQ_SCHED = 0, STRIDE_SCHED};
+enum mlfq_level {TOP = 0, MID, LOW};
 
-enum schedule_mode { MLFQ_S = 0, STRIDE_S};
-enum mlfq_lev { TOP=0 , MID, LOW};
-
-//Per-process struct of MLFQ 
 struct proc_mlfq {
-    int curr_runtime;
-    int priority; 
-    enum mlfq_lev level; 
+    int tick;
+    enum mlfq_level lev;  
+    int priority;       
 };
 
-//Whole struct of MLFQ
-struct mlfq {
-    int total_runtime; 
-    int top_proc_count; 
-    int mid_proc_count; 
-    int low_proc_count; 
-    int stride;     
-    int pass;
-    int share;  
+struct proc_mlfq_queue {         
+    int totaltick;      
+    int top_count;           
+    int mid_count;           
+    int low_count;           
 };
 
-//Per-process struct in Stride
 struct proc_stride {
     int pass;
     int stride;
-    int share; 
+    int share;        
 };
-
 
 // Per-CPU state
 struct cpu {
@@ -88,9 +82,9 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   
-  enum schedule_mode mode;
+  enum sched_mode mode;
+  struct proc_stride strd;
   struct proc_mlfq mlfq;
-  struct proc_stride stride;
 };
 
 // Process memory is laid out contiguously, low addresses first:
