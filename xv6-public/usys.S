@@ -32,4 +32,5 @@ SYSCALL(uptime)
 SYSCALL(yield)
 SYSCALL(myfunction)
 SYSCALL(getppid)
-
+SYSCALL(getlev)
+SYSCALL(set_cpu_share)

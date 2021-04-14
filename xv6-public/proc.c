@@ -12,7 +12,13 @@ struct {
   struct proc proc[NPROC];
 } ptable;
 
-static struct proc *initproc;
+static struct proc *initemp_proc;
+
+//defining structs and vars for MLFQ and Stride scheduler
+struct mlfq mlfq_queue; 
+int mlfq_tot_cpushare= 100; 
+int stride_tot_cpushare = 0; 
+int num_proc = 0; 
 
 int nextpid = 1;
 extern void forkret(void);
@@ -88,7 +94,12 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
-
+  
+  //Initialize the val to 0 in memory
+  memset(&p->mlfq, 0, sizeof(p->mlfq));
+  memset(&p->stride, 0, sizeof(p->stride));  
+  p->mode = 0; //mlfq as default
+	
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -125,7 +136,7 @@ userinit(void)
 
   p = allocproc();
   
-  initproc = p;
+  initemp_proc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
   inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
@@ -151,6 +162,8 @@ userinit(void)
   p->state = RUNNABLE;
 
   release(&ptable.lock);
+  
+  memset(&mlfq_queue, 0, sizeof(mlfq_queue));
 }
 
 // Grow current process's memory by n bytes.
@@ -231,7 +244,7 @@ exit(void)
   struct proc *p;
   int fd;
 
-  if(curproc == initproc)
+  if(curproc == initemp_proc)
     panic("init exiting");
 
   // Close all open files.
@@ -251,13 +264,18 @@ exit(void)
 
   // Parent might be sleeping in wait().
   wakeup1(curproc->parent);
+  
+  if(curproc->mode == STRIDE_S) {
+    mlfq_tot_cpushare += curproc->stride.share; //mlfq get back the share from terminated proc
+    stride_tot_cpushare -= curproc->stride.share; //total share hold by stride_s decreased 
+  }
 
   // Pass abandoned children to init.
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->parent == curproc){
-      p->parent = initproc;
+      p->parent = initemp_proc;
       if(p->state == ZOMBIE)
-        wakeup1(initproc);
+        wakeup1(initemp_proc);
     }
   }
 
@@ -311,6 +329,153 @@ wait(void)
   }
 }
 
+int
+get_proc_count(enum schedule_mode mode)
+{
+  int count = 0;
+  struct proc *p = 0;
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if(p->state != RUNNABLE)
+      continue;
+      
+    if(p->mode == mode)
+      count++;
+  }
+  return count;
+}
+
+int
+getlev(void)
+{	
+	return myproc()->mlfq.level;
+}
+
+int 
+get_min_pass(void)
+{
+	  int min = 99999999;
+    struct proc *p;
+    
+    acquire(&ptable.lock);
+
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state != RUNNABLE)
+        continue;
+      
+      if(p->mode == STRIDE_S)
+        if(min > p->stride.pass)
+          min = p->stride.pass;
+    }
+    
+    release(&ptable.lock);
+
+		int mlfq_count = get_proc_count(MLFQ_S);
+    if(mlfq_count > 0)
+      if(min > mlfq_queue.pass)
+        min = mlfq_queue.pass;
+    return min; 
+}
+
+int 
+update_stride(void)
+{	
+  int mlfq_ps = get_proc_count(MLFQ_S);
+	int stride_ps = get_proc_count(STRIDE_S);
+  
+  struct proc *p = 0;
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state != RUNNABLE)
+      continue;
+      
+    switch(p->mode) {
+      case MLFQ_S:
+        if(mlfq_ps <= 0) {
+          p->stride.share = 0; 
+          p->stride.stride = 0; 
+          mlfq_queue.share = 0; 
+          break;
+        } else {
+          p->stride.share = mlfq_queue.share / mlfq_ps;
+          p->stride.stride = 10001 / p->stride.share;
+          break;
+        }
+        
+      case STRIDE_S:
+        p->stride.share = stride_tot_cpushare / stride_ps;
+        p->stride.stride = 10001 / p->stride.share;
+        break;
+    }
+  }
+  return 0;
+}
+
+int
+init_pass(void)
+{
+	struct proc *p;
+
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if(p->state != RUNNABLE || p->mode == STRIDE_S)
+      continue;
+    p->stride.pass = 0;
+  }
+  
+  mlfq_queue.pass = 0;
+  return 0;
+}
+
+int 
+set_cpu_share(int share)
+{
+  struct proc *p = myproc();
+  int mlfq_proc_count , stride_proc_count;
+  acquire(&ptable.lock);
+    
+  if(stride_tot_cpushare < 0 || share < 0) {
+      panic("share_sum < 0 || share < 0");
+      return -1;
+  }
+   
+  stride_tot_cpushare += share;
+  mlfq_tot_cpushare -= share;
+  
+  p->mode = STRIDE_S; //change proc scheduler to stride
+  p->stride.share = share;
+   
+  if(stride_tot_cpushare > 80) {
+      stride_tot_cpushare -= share;
+      mlfq_tot_cpushare += share;
+      p->mode = MLFQ_S;
+      
+      mlfq_proc_count = get_proc_count(MLFQ_S);
+      stride_proc_count = get_proc_count(STRIDE_S);
+        
+      if(mlfq_proc_count > 0) {
+          p->stride.share = (80 - stride_tot_cpushare) / stride_proc_count;    
+      } else if(mlfq_proc_count == 0) {
+          p->stride.share = (100 - stride_tot_cpushare) / stride_proc_count;
+      } else {
+          panic("# of MLFQ running process < 0\n");
+          return -1;
+      }
+       
+      /* update stride for every process*/
+      update_stride();
+      /* initialize all pass */
+      init_pass();
+        
+      release(&ptable.lock);
+      return 1;
+  }
+    /* update stride for every process*/
+  update_stride();
+    /* initialize all pass */
+  init_pass();
+    
+  release(&ptable.lock);
+  return 0; 
+}
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -324,7 +489,11 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  c->proc = 0;
+  c->proc = 0; 
+  
+  struct proc *temp_proc = 0;
+  int temp_pr;
+  enum mlfq_lev temp_level = LOW;
   
   for(;;){
     // Enable interrupts on this processor.
@@ -332,25 +501,136 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+    
+    int min_pass = 99999999;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
+      if(p->state != RUNNABLE || p->mode != STRIDE_S)
         continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
+      if(min_pass >= p->stride.pass){
+      	min_pass = p->stride.pass;
+      	temp_proc = p;
+     	}
+    }
+    
+    //checking procs in MLFQ first
+    int mlfq_count = get_proc_count(MLFQ_S);
+    if(mlfq_count>0 && min_pass>=mlfq_queue.pass){
+    	min_pass = mlfq_queue.pass;
+    	temp_pr = 99999999;
+    	temp_level = LOW;
+    	
+      for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if((p->state != RUNNABLE) || (p->mode != MLFQ_S))
+          continue;
+        
+        if(p->mlfq.level <= temp_level) {
+          if(p->mlfq.priority <= temp_pr) {
+            temp_level = p->mlfq.level;
+            temp_pr = p->mlfq.priority;
+            temp_proc = p;
+          }
+        }
+      }
+        
+      p = temp_proc;
       c->proc = p;
-      switchuvm(p);
+      switchuvm(p); //switch process with temp_proc (mlfq)
       p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
+      
+      swtch(&c->scheduler, p->context);
       switchkvm();
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+      if(p->mode == MLFQ_S) {
+        p->stride.pass += p->stride.stride;
+        p->mlfq.curr_runtime++;
+        
+        mlfq_queue.pass += (p->stride.stride / mlfq_count);
+        mlfq_queue.total_runtime++;
+      } else {
+        panic("p->mode != MLFQ_S\n");
+      }
+      
+      //updating each process on every level
+      if(p->mlfq.level == TOP) {
+        
+        //TOP level allot check
+        if(p->mlfq.curr_runtime >= TOP_ALLOT) {
+          p->mlfq.level = MID;
+          p->mlfq.curr_runtime = 0;
+          mlfq_queue.top_proc_count--;
+          mlfq_queue.mid_proc_count++;
+        //TOP level time slice check
+        } else if(p->mlfq.curr_runtime % TOP_TS == 0) {
+          p->mlfq.priority++;
+        }
+        
+        
+      } else if(p->mlfq.level == MID) {
+        //MID level allot check
+        if(p->mlfq.curr_runtime >= MID_TS) {
+          p->mlfq.level = LOW;
+          p->mlfq.curr_runtime = 0;
+          mlfq_queue.mid_proc_count--;
+          mlfq_queue.low_proc_count++;
+        //TOP level time slice check
+        } else if(p->mlfq.curr_runtime % MID_TS == 0) {
+          p->mlfq.priority++;
+        }
+        
+        
+      } else if(p->mlfq.level == LOW) {
+        //LOW level allot check
+        if(p->mlfq.curr_runtime % LOW_TS == 0) {
+          p->mlfq.priority++;
+        }
+      } else {
+        panic("p->mlfq.level == ?\n");
+      }
+      
+      //priority boost for every 100 ticks
+      if(mlfq_queue.total_runtime >= PR_BOOST_TICK) {
+        for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+          if((p->state != RUNNABLE) || (p->mode != MLFQ_S))
+            continue;
+          p->mlfq.curr_runtime = 0;
+          p->mlfq.priority = 0;
+          p->mlfq.level = TOP;
+        }
+        mlfq_queue.total_runtime = 0;
+        mlfq_queue.top_proc_count = mlfq_count;
+        mlfq_queue.mid_proc_count = 0;
+        mlfq_queue.low_proc_count = 0;    
+      }
+      
+		}
+		// if no MLFQ proc, then run STRIDE sched
+		else if (mlfq_count==0 || (mlfq_count>0 && min_pass<mlfq_queue.pass) ){
+			p = temp_proc;
+      c->proc = p;
+      
+      switchuvm(p);
+      p->state = RUNNING;
+      
+      swtch(&c->scheduler, p->context);
+      switchkvm();
+
+      p->stride.pass += p->stride.stride; //update pass val
+		
+		}else {
+      panic("get_num(MLFQ_SCHED) < 0\n");
+  	}
+  	
+  	update_stride();
+    
+    if(c->proc->stride.pass > 100000000) {
+      init_pass();
     }
-    release(&ptable.lock);
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    c->proc = 0;
+    
+  	release(&ptable.lock);
 
   }
 }
