@@ -19,8 +19,18 @@ struct proc_mlfq_queue mlfq_queue;
 int requested_share_total = 0;
 int mlfq_share = 100;
 
+int lwp_count = 0;
+
+struct st{
+	int use;
+};
+
+struct {
+	struct st st[NPROC*50];
+} stack_table;
 
 int nextpid = 1;
+int nextlwpid = 1;
 extern void forkret(void);
 extern void trapret(void);
 
@@ -163,6 +173,11 @@ userinit(void)
   release(&ptable.lock);
   
   memset(&mlfq_queue, 0, sizeof(mlfq_queue) );
+  
+  for(int i=0 ; i<NPROC*50 ; i++){
+  	stack_table.st[i].use = 0;
+  }
+  
 }
 
 // Grow current process's memory by n bytes.
@@ -565,6 +580,207 @@ scheduler(void)
   }
 }
 
+//get the stack base of the process
+uint 
+find_sbase(struct proc* p) 
+{    
+  //find stack base that is unused
+  for(uint i=0; i<NPROC*50; i++) {
+    if(stack_table.st[i].use != 0){
+      continue;
+    }
+      
+    //if found, set to used
+    stack_table.st[i].use = 1;
+    //by the requesting proc
+    p->stack_idx = i;
+	  //and return the stack base
+    return i;
+  }
+  panic("stack full.");
+}
+
+//create LWP.
+//Similar to fork() system call, but instead of copying the resources
+//of manager process, the child (LWP) will share those resources.
+//Need to find a new stack position for the new LWP
+//which is different from any other proccess or LWP.
+int 
+thread_create(thread_t* thread, void* (*start_routine)(void*), void* arg) 
+{
+    
+  struct proc *np; //new LWP
+  struct proc *curproc = myproc(); //caller proc
+
+	//alloc proc for LWP
+  if((np = allocproc()) == 0) {
+      return -1;
+  }
+  lwp_count++;
+    
+  
+  acquire(&ptable.lock);
+  
+  //if LWP created by normal process
+  if(curproc->lwpid == 0){ 
+      np->lwpmid = curproc->pid; //the caller process will become the manager of the LWP
+      np->parent = curproc;  
+
+	//if LWP created by other LWP
+  }else if(curproc->lwpid > 0) { 
+      np->lwpmid = curproc->lwpmid; //the new LWP will have the same manager proc as the caller LWP
+      np->parent = curproc->parent; //and same parent proc
+      
+  //else invalid caller,return non zero
+  } else {
+      cprintf("invalid caller process.\n");
+      return -1;
+  }
+    
+	//assign the LWP ID and resources (shares the same resc as manager proc)
+  *thread = np->lwpid;
+  np->lwpid = nextlwpid++;
+  np->pgdir = curproc->pgdir; //share page dir
+  *np->tf = *curproc->tf; 	  //share trap frame
+  np->cwd = idup(curproc->cwd);
+  safestrcpy(np->name, curproc->name, sizeof(curproc->name)); //share name (debug)
+
+  //set LWP stack 
+  //2 page for stack and guard
+  np->stack_base = curproc->sz + (uint)(2*PGSIZE*(find_sbase(np)+1));
+
+  if((np->sz = allocuvm(np->pgdir, np->stack_base, np->stack_base + 2*PGSIZE)) == 0) {
+      np->state = UNUSED;
+      return -1;
+  } 
+    
+  //set instruction pointer to start_routine function
+  np->tf->eip = (uint)start_routine;
+  
+  //save the arg pointer into stack
+  np->tf->esp = np->sz - 4;
+  *((uint*)(np->tf->esp)) = (uint)arg;
+  
+  //and set the stack pointer
+  np->tf->esp = np->sz - 8;
+  *((uint*)(np->tf->esp)) = 0xffffffff;
+    
+  //same procedure as fork()
+  for(int i=0; i<NOFILE; i++)
+      if(curproc->ofile[i])
+          np->ofile[i] = filedup(curproc->ofile[i]);
+
+  np->state = RUNNABLE;
+  release(&ptable.lock);
+  
+  return 0;
+}
+
+//thread_exit to change the caller LWP to zombie. 
+//Very similar to exit() function with little modification
+void
+thread_exit(void* retval)
+{
+  struct proc *curproc = myproc();
+  //struct proc *p;
+  int fd;
+
+  if(curproc == initemp_proc)
+    panic("init exiting");
+
+  // Close all open files.
+  for(fd = 0; fd < NOFILE; fd++){
+    if(curproc->ofile[fd]){
+      fileclose(curproc->ofile[fd]);
+      curproc->ofile[fd] = 0;
+    }
+  }
+
+  begin_op();
+  iput(curproc->cwd);
+  end_op();
+  curproc->cwd = 0;
+
+  acquire(&ptable.lock);
+  
+  //set retval pointer to LWP retval
+  curproc->retval = retval;
+
+  // Manager proc might be sleeping in wait().
+  wakeup1(curproc->parent);
+
+  // Jump into the scheduler, never to return.
+  curproc->state = ZOMBIE;
+  lwp_count--;
+  sched();
+  panic("zombie exit");
+}
+
+//Called only by the LWP manager proc
+//to return the resources to the
+//joining LWP into manager's LWP list.
+//Similar to wait() function.
+int 
+thread_join(thread_t thread, void** retval)
+{
+	struct proc *p;
+  struct proc *curproc = myproc();
+  
+  //this function can only be called by the manager proc
+  if(curproc->lwpid > 0) {
+  	cprintf("Not a manager proc.\n");
+  	return -1;
+  }
+  
+  acquire(&ptable.lock);
+  for(;;){
+    // Scan through table looking for to-be-joined thread
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      //if(p->parent != curproc)
+        //continue;
+      //havekids = 1;
+      if(p->lwpid != thread)
+        continue;  
+      if(p->lwpmid != curproc->pid)
+        continue;
+        
+      if(p->state == ZOMBIE){
+        // Found one.
+        *retval = p->retval; //set retval
+        //pid = p->pid;
+        kfree(p->kstack); //free the LWP stack
+        p->kstack = 0;  
+        /*instead of freevm, we only dealloc vm of the LWP since it is a shared resource*/
+        //freevm(p->pgdir);
+        deallocuvm(p->pgdir, p->stack_base+2*PGSIZE, p->stack_base); 
+        stack_table.st[p->stack_idx].use = 0;
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        p->state = UNUSED;
+        p->lwpid = 0;
+        p->lwpmid = 0;
+        p->stack_base = 0;
+        p->stack_idx = 0;
+        p->retval = 0;
+        
+        release(&ptable.lock);
+        return 0;
+      }
+    }
+
+    // No point joining if we don't have any manager proc
+    if(curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+
+    // Wait for LWP to finish.  
+    sleep(curproc, &ptable.lock);  //DOC: wait-sleep
+  }
+
+}
 
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores

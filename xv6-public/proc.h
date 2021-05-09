@@ -85,6 +85,12 @@ struct proc {
   enum sched_mode mode;
   struct proc_stride strd;
   struct proc_mlfq mlfq;
+  
+  int lwpid;									//LWP ID
+  int lwpmid;									//LWP Manager process ID
+  int stack_base;							//LWP stack base
+  int stack_idx;							//LWP stack index in stack_table
+  void* retval;								//LWP retrun value
 };
 
 // Process memory is laid out contiguously, low addresses first:
