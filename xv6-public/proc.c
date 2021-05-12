@@ -108,6 +108,11 @@ found:
   memset(&p->mlfq, 0, sizeof(p->mlfq));
   memset(&p->strd, 0, sizeof(p->strd));
   p->mode = MLFQ_SCHED;
+  p->lwpid = 0;
+  p->lwpmid = 0;
+  p->retval = 0;
+  p->stack_base = 0;
+  p->stack_idx = 0;
 	
   release(&ptable.lock);
 
@@ -638,8 +643,8 @@ thread_create(thread_t* thread, void* (*start_routine)(void*), void* arg)
   }
     
 	//assign the LWP ID and resources (shares the same resc as manager proc)
-  *thread = np->lwpid;
   np->lwpid = nextlwpid++;
+  *thread = np->lwpid;
   np->pgdir = curproc->pgdir; //share page dir
   *np->tf = *curproc->tf; 	  //share trap frame
   np->cwd = idup(curproc->cwd);
