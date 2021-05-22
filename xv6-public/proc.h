@@ -1,10 +1,10 @@
 //constants for new scheduler
-#define     TOP_QUANTA    1
-#define     MID_QUANTA    2
-#define     LOW_QUANTA    4
-#define     TOP_ALLOT    5
-#define     MID_ALLOT    10
-#define     PR_BOOST_TICK    100
+#define     TOP_QUANTA    5
+#define     MID_QUANTA    10
+#define     LOW_QUANTA    20
+#define     TOP_ALLOT    20
+#define     MID_ALLOT    40
+#define     PR_BOOST_TICK    200
 #define     TOT_TICKET       10000
 
 //schedule mode and mlfq levels
@@ -91,6 +91,7 @@ struct proc {
   int stack_base;							//LWP stack base
   int stack_idx;							//LWP stack index in stack_table
   void* retval;								//LWP retrun value
+  int forked;									//Fork status (0:not forked, 1:forked)
 };
 
 // Process memory is laid out contiguously, low addresses first:

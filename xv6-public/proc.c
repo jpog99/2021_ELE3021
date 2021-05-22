@@ -18,7 +18,6 @@ static struct proc *initemp_proc;
 struct proc_mlfq_queue mlfq_queue;
 int requested_share_total = 0;
 int mlfq_share = 100;
-
 int lwp_count = 0;
 
 struct st{
@@ -33,7 +32,7 @@ int nextpid = 1;
 int nextlwpid = 1;
 extern void forkret(void);
 extern void trapret(void);
-
+uint find_sbase(struct proc* p);
 static void wakeup1(void *chan);
 
 void
@@ -113,6 +112,7 @@ found:
   p->retval = 0;
   p->stack_base = 0;
   p->stack_idx = 0;
+  p->forked = 0;
 	
   release(&ptable.lock);
 
@@ -193,7 +193,17 @@ growproc(int n)
   uint sz;
   struct proc *curproc = myproc();
 
-  sz = curproc->sz;
+  acquire(&ptable.lock);
+
+
+  for(int i=0; i<n/(2*PGSIZE); i++)
+    find_sbase(curproc);
+
+  if(curproc->lwpid > 0)
+    sz = curproc->parent->sz;
+  else
+    sz = curproc->sz;
+  
   if(n > 0){
     if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
       return -1;
@@ -201,7 +211,14 @@ growproc(int n)
     if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
       return -1;
   }
-  curproc->sz = sz;
+
+  if(curproc->lwpid > 0)
+    curproc->parent->sz = sz;
+  else
+    curproc->sz = sz;
+  
+  release(&ptable.lock);
+
   switchuvm(curproc);
   return 0;
 }
@@ -219,6 +236,12 @@ fork(void)
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
+  }
+  
+  //case: called by LWP
+  if(curproc->lwpid > 0){
+		np->forked = 1;
+   	np->lwpid = nextlwpid++;
   }
 
   // Copy process state from proc.
@@ -265,6 +288,51 @@ exit(void)
 
   if(curproc == initemp_proc)
     panic("init exiting");
+    
+  if(curproc->lwpid == 0){
+  	curproc->killed = 1;
+  	
+  	acquire(&ptable.lock);
+  	
+  	//find all LWP under the exiting master thread and terminate all of them
+  	for(;;){
+  		for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+  			if(p->lwpmid == curproc->pid) {           
+        	if(p->state == ZOMBIE) {
+          	kfree(p->kstack);
+            p->kstack = 0;
+            deallocuvm(p->pgdir, p->stack_base+2*PGSIZE, p->stack_base);
+            p->pid = 0;
+            p->parent = 0;
+            p->name[0] = 0;
+            p->killed = 0;
+            p->state = UNUSED;
+            p->lwpid = 0;
+            p->lwpmid = 0;
+            p->stack_base = 0;
+            p->stack_idx = 0;
+            p->forked = 0;
+            p->retval = 0;
+            lwp_count--;
+          
+          }else{
+          	p->killed = 1;
+          	wakeup1(p);
+         }
+       }
+      }  
+       
+       //only release the lock after all lwp terminated
+      if(lwp_count ==0){
+      	release(&ptable.lock);
+      	break;
+      }
+      sleep(curproc, &ptable.lock);
+    }
+    
+  } else if(curproc->forked != 1){
+    curproc->parent->killed = 1;
+  }        	
 
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
@@ -282,7 +350,17 @@ exit(void)
   acquire(&ptable.lock);
 
   // Parent might be sleeping in wait().
-  wakeup1(curproc->parent);
+  if(curproc->lwpid == 0){
+  	wakeup1(curproc->parent);
+  }else if(curproc->parent != 0) {
+      wakeup1(curproc->parent);
+  }
+       
+  //Update the total share after all LWP terminated
+  if(curproc->mode == STRIDE_SCHED) {
+    mlfq_share += curproc->strd.share;
+    requested_share_total -= curproc->strd.share;
+  }
 
   // Pass abandoned children to init.
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
@@ -769,6 +847,7 @@ thread_join(thread_t thread, void** retval)
         p->stack_base = 0;
         p->stack_idx = 0;
         p->retval = 0;
+        p->forked = 0;
         
         release(&ptable.lock);
         return 0;
@@ -912,18 +991,35 @@ int
 kill(int pid)
 {
   struct proc *p;
+  struct proc *curproc = myproc();
 
   acquire(&ptable.lock);
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->pid == pid){
-      p->killed = 1;
-      // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
-        p->state = RUNNABLE;
-      release(&ptable.lock);
-      return 0;
-    }
+  if(curproc->lwpid == 0){
+  	for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+		  if(p->pid == pid){
+		    p->killed = 1;
+		    // Wake process from sleep if necessary.
+		    if(p->state == SLEEPING)
+		      p->state = RUNNABLE;
+		    release(&ptable.lock);
+		    return 0;
+		  }
+  	}
   }
+  
+  //kill all LWP if called by LWP
+  else{
+  	for(p=ptable.proc; p<&ptable.proc[NPROC]; p++){
+      if(p->lwpid > 0) {
+        p->killed = 1;
+        if(p->state == SLEEPING)
+          p->state = RUNNABLE;
+      }
+    }
+    release(&ptable.lock);
+    return 0;
+  }
+  
   release(&ptable.lock);
   return -1;
 }
@@ -969,3 +1065,4 @@ int
 getppid(void){	
 	return myproc()->parent->pid;
 }
+
