@@ -44,6 +44,7 @@ struct log {
   int committing;  // in commit(), please wait.
   int dev;
   struct logheader lh;
+  int full; //flag 1 if log is full
 };
 struct log log;
 
@@ -129,7 +130,7 @@ begin_op(void)
   while(1){
     if(log.committing){
       sleep(&log, &log.lock);
-    } else if(log.lh.n + (log.outstanding+1)*MAXOPBLOCKS > LOGSIZE){
+    } else if(log.lh.n > (LOGSIZE-1)){
       // this op might exhaust log space; wait for commit.
       sleep(&log, &log.lock);
     } else {
@@ -166,6 +167,11 @@ end_op(void)
     // call commit w/o holding locks, since not allowed
     // to sleep with locks.
     commit();
+    
+    //immediate flush if log full
+    if(log.full)
+    	sync();
+    	
     acquire(&log.lock);
     log.committing = 0;
     wakeup(&log);
@@ -195,9 +201,11 @@ commit()
   if (log.lh.n > 0) {
     write_log();     // Write modified blocks from cache to log
     write_head();    // Write header to disk -- the real commit
-    install_trans(); // Now install writes to home locations
-    log.lh.n = 0;
-    write_head();    // Erase the transaction from the log
+    
+    /*only do full commit when log is full*/
+    //install_trans(); // Now install writes to home locations
+    //log.lh.n = 0;
+    //write_head();    // Erase the transaction from the log
   }
 }
 
@@ -226,9 +234,31 @@ log_write(struct buf *b)
       break;
   }
   log.lh.block[i] = b->blockno;
-  if (i == log.lh.n)
+  if (i == log.lh.n){
     log.lh.n++;
+    
+    //set flag if all log blocks (except header) are occupied
+    if(log.lh.n == (LOGSIZE-1))
+    	log.full = 1;
+  }
   b->flags |= B_DIRTY; // prevent eviction
   release(&log.lock);
 }
 
+int
+get_log_num(void)
+{
+	return log.lh.n;
+}
+
+int
+sync(void)
+{
+	if(log.lh.n < (LOGSIZE-1) || log.lh.n > (LOGSIZE-1))
+		return -1;
+    
+  install_trans(); //flush to disk
+  log.lh.n = 0;  //reset log number
+  write_head();    
+  return 0;	
+}
