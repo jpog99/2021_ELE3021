@@ -399,8 +399,8 @@ bmap(struct inode *ip, uint bn)
   //double-indirect address parsing
   if(bn < NDINDIRECT){
     // Load DOUBLE indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT+2]) == 0)
-      ip->addrs[NDIRECT+2] = addr = balloc(ip->dev);
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
     
     //FIRST PART
     bp = bread(ip->dev, addr);
@@ -428,8 +428,8 @@ bmap(struct inode *ip, uint bn)
   //triple-indirect address parsing
   if(bn < NTINDIRECT){
     // Load TRIPLE indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT+1]) == 0)
-      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+    if((addr = ip->addrs[NDIRECT+2]) == 0)
+      ip->addrs[NDIRECT+2] = addr = balloc(ip->dev);
     
     //FIRST PART
     bp = bread(ip->dev, addr);
