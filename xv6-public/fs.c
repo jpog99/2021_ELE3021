@@ -395,7 +395,75 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
-
+  
+  //double-indirect address parsing
+  if(bn < NDINDIRECT){
+    // Load DOUBLE indirect block, allocating if necessary.
+    if((addr = ip->addrs[NDIRECT+2]) == 0)
+      ip->addrs[NDIRECT+2] = addr = balloc(ip->dev);
+    
+    //FIRST PART
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    
+    if((addr = a[bn/NDINDIRECT]) == 0){
+      a[bn/NDINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    
+    //SECOND PART
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    
+    if((addr = a[bn % NINDIRECT]) == 0){
+      a[bn % NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    
+    return addr;
+  }
+  
+  //triple-indirect address parsing
+  if(bn < NTINDIRECT){
+    // Load TRIPLE indirect block, allocating if necessary.
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+    
+    //FIRST PART
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    
+    if((addr = a[bn/NINDIRECT]) == 0){
+      a[bn/NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    
+    //SECOND PART
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    
+    if((addr = a[(bn % NDINDIRECT)/NINDIRECT]) == 0){
+      a[(bn % NDINDIRECT)/NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    
+    //THIRD PART
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    
+    if((addr = a[bn % NINDIRECT]) == 0){
+      a[bn % NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+     
+    return addr;
+  }
+  
   panic("bmap: out of range");
 }
 
@@ -407,27 +475,100 @@ bmap(struct inode *ip, uint bn)
 static void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, k;
+  struct buf *bp, *bp2, *bp3;
+  uint *a, *a2, *a3;
 
+	//free direct inode
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
       ip->addrs[i] = 0;
     }
   }
-
+  
+  //free single indirect inode if being used by ip
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
     for(j = 0; j < NINDIRECT; j++){
-      if(a[j])
+      if(a[j]){
         bfree(ip->dev, a[j]);
+        a[j] = 0;
+      }
     }
     brelse(bp);
+    bp = 0;
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+  
+  //====free double indirect inode if being used by ip====
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    
+    //fetch first part
+    for(i = 0; i < NINDIRECT; i++){      
+      if(a[i]){
+      	bp2 = bread(ip->dev, a[i]);
+        a2 = (uint*)bp2->data;
+        
+        //fetch second part
+        for(j = 0; j < NINDIRECT; j++){
+          if(a2[j]){
+      	    bfree(ip->dev, a2[j]); //free second part
+      	    a2[j] = 0;        
+          }
+        }
+        brelse(bp2);
+        bfree(ip->dev, a[i]); //free first part
+        a[i] = 0;
+      }
+    }
+    brelse(bp);
+    bp = 0;
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
+  }
+  
+  //====free triple indirect inode if being used by ip====
+  if(ip->addrs[NDIRECT+2]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+2]);
+    a = (uint*)bp->data;
+    
+    //fetch first part
+    for(i = 0; i < NINDIRECT; i++){      
+      if(a[i]){
+      	bp2 = bread(ip->dev, a[i]);
+        a2 = (uint*)bp2->data;
+        
+        //fetch second part
+        for(j = 0; j < NINDIRECT; j++){
+          if(a2[j]){
+      	    bp3 = bread(ip->dev, a2[j]);
+            a3 = (uint*)bp3->data; 
+            
+            //fetch third part
+            for(k = 0; k < NINDIRECT; k++){
+              if(a3[k]){
+      	        bfree(ip->dev, a3[k]); //free third part
+      	        a3[k] = 0;        
+              }     
+            }
+            brelse(bp3);
+            bfree(ip->dev, a2[j]); //free second part
+            a2[j] = 0;
+          }
+        }
+        brelse(bp2);
+        bfree(ip->dev, a[i]); //free first part
+        a[i] = 0;
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+2]);
+    ip->addrs[NDIRECT+2] = 0;
   }
 
   ip->size = 0;
