@@ -223,7 +223,7 @@ log_write(struct buf *b)
 {
   int i;
 
-  if (log.lh.n >= LOGSIZE || log.lh.n >= log.size - 1)
+  if (log.lh.n >= LOGSIZE)
     panic("too big a transaction");
   if (log.outstanding < 1)
     panic("log_write outside of trans");

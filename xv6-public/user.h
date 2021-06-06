@@ -33,7 +33,8 @@ void thread_exit(void*) __attribute__((noreturn));
 int thread_join(thread_t, void**);
 int get_log_num(void);
 int sync(void);
-
+int pread(int, void*, int, int);
+int pwrite(int, void*, int, int);
 // ulib.c
 int stat(const char*, struct stat*);
 char* strcpy(char*, const char*);
