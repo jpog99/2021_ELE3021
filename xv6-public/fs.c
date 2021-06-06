@@ -435,8 +435,8 @@ bmap(struct inode *ip, uint bn)
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     
-    if((addr = a[bn/NINDIRECT]) == 0){
-      a[bn/NINDIRECT] = addr = balloc(ip->dev);
+    if((addr = a[bn/NDINDIRECT]) == 0){
+      a[bn/NDINDIRECT] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
