@@ -262,3 +262,4 @@ sync(void)
   write_head();    
   return 0;	
 }
+
