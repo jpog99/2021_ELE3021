@@ -112,26 +112,6 @@ fileread(struct file *f, char *addr, int n)
   panic("fileread");
 }
 
-// Read from file f with offset off.
-int
-pfileread(struct file *f, char *addr, int n, int off)
-{
-  int r;
-
-  if(f->readable == 0)
-    return -1;
-  if(f->type == FD_PIPE)
-    return piperead(f->pipe, addr, n);
-  if(f->type == FD_INODE){
-    ilock(f->ip);
-    if((r = readi(f->ip, addr, off, n)) > 0)
-      off += r;
-    iunlock(f->ip);
-    return r;
-  }
-  panic("pfileread");
-}
-
 //PAGEBREAK!
 // Write to file f.
 int
@@ -175,6 +155,25 @@ filewrite(struct file *f, char *addr, int n)
   panic("filewrite");
 }
 
+// Read from file f with offset off.
+int
+pfileread(struct file *f, char *addr, int n, int off)
+{
+  int r;
+
+  if(f->readable == 0)
+    return -1;
+  if(f->type == FD_PIPE)
+    return piperead(f->pipe, addr, n);
+  if(f->type == FD_INODE){
+    ilock(f->ip);
+    r = readi(f->ip, addr, off, n);
+    iunlock(f->ip);
+    return r;
+  }
+  panic("pfileread");
+}
+
 // Write to file f with offset off.
 int
 pfilewrite(struct file *f, char *addr, int n, int off)
@@ -201,8 +200,7 @@ pfilewrite(struct file *f, char *addr, int n, int off)
 
       begin_op();
       ilock(f->ip);
-      if ((r = pwritei(f->ip, addr + i, off, n1)) > 0)
-        off += r;
+      r = writei(f->ip, addr + i, off, n1);
       iunlock(f->ip);
       end_op();
 
